@@ -1,0 +1,422 @@
+// All money columns are stored as integer paise (₹1 = 100). The API speaks rupees.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Identity ─────────────────────────────
+
+enum Role {
+  ADMIN // teacher / administrator
+  STUDENT
+}
+
+enum AccountStatus {
+  PENDING // registered, awaiting teacher approval — cannot log in
+  ACTIVE
+  DEACTIVATED // disabled by the teacher — cannot log in, sessions revoked
+  REJECTED // registration declined — cannot log in
+}
+
+model User {
+  id                String        @id @default(cuid())
+  email             String        @unique
+  passwordHash      String?
+  role              Role
+  status            AccountStatus @default(PENDING)
+  name              String
+  phone             String?
+  lastLoginAt       DateTime?
+  passwordChangedAt DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  student             Student?
+  sessions            Session[]
+  passwordResets      PasswordResetToken[]
+  registrations       Registration[]       @relation("RegistrationApplicant")
+  reviewedRegs        Registration[]       @relation("RegistrationReviewer")
+  recordedPayments    Payment[]            @relation("PaymentRecorder")
+  enrollmentsChanged  Enrollment[]         @relation("EnrollmentChangedBy")
+  adjustmentsCreated  FeeAdjustment[]
+  chargesCreated      FeeCharge[]          @relation("ChargeCreatedBy")
+  feeChanges          BatchFeeChange[]
+  auditLogs           AuditLog[]
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique // sha256 of the bearer token; raw token is never stored
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime  @default(now())
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  purpose   String    @default("RESET") // RESET | SET_PASSWORD (new accounts created by the teacher)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ───────────────────────────── Admissions ─────────────────────────────
+
+enum RegistrationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum RegistrationKind {
+  NEW // a new applicant from the public registration form
+  REALLOCATION // an existing student whose batch was deleted and needs a new one
+}
+
+model Registration {
+  id                String             @id @default(cuid())
+  code              String             @unique // RG-089
+  userId            String?
+  name              String
+  email             String
+  phone             String
+  schoolClass       String
+  requestedSubjects String[]
+  preferredBatchId  String?
+  notes             String? // preferred time / batch note
+  status            RegistrationStatus @default(PENDING)
+  kind              RegistrationKind   @default(NEW)
+  reviewedById      String?
+  reviewedAt        DateTime?
+  reviewNote        String?
+  assignedBatchId   String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  user           User?  @relation("RegistrationApplicant", fields: [userId], references: [id], onDelete: SetNull)
+  reviewedBy     User?  @relation("RegistrationReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  preferredBatch Batch? @relation("PreferredBatch", fields: [preferredBatchId], references: [id], onDelete: SetNull)
+  assignedBatch  Batch? @relation("AssignedBatch", fields: [assignedBatchId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([email])
+}
+
+// ───────────────────────────── Students & batches ─────────────────────────────
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Student {
+  id             String        @id @default(cuid())
+  code           String        @unique // ST-2041
+  userId         String        @unique
+  schoolClass    String
+  subjects       String[]
+  address        String?
+  parentName     String?
+  parentRelation String?
+  parentEmail    String?
+  parentPhone    String?
+  notes          String?
+  status         StudentStatus @default(ACTIVE)
+  joinedAt       DateTime      @default(now())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  enrollments Enrollment[]
+  charges     FeeCharge[]
+  payments    Payment[]
+
+  @@index([status])
+}
+
+enum BatchStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+model Batch {
+  id         String      @id @default(cuid())
+  code       String      @unique // B-101
+  name       String
+  classLevel String
+  subjects   String[]
+  schedule   String // teaching days, e.g. "Mon, Wed, Fri"
+  startTime  String // "17:00" or "5:00 PM" — free text as entered by the teacher
+  endTime    String?
+  capacity   Int
+  monthlyFee Int // paise — applies to FUTURE charges only
+  status     BatchStatus @default(ACTIVE)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  enrollments       Enrollment[]
+  charges           FeeCharge[]
+  feeChanges        BatchFeeChange[]
+  preferredBy       Registration[]   @relation("PreferredBatch")
+  assignedFromRegs  Registration[]   @relation("AssignedBatch")
+}
+
+// History of batch fee changes (for auditing which fee applied when).
+model BatchFeeChange {
+  id          String   @id @default(cuid())
+  batchId     String
+  oldFee      Int?
+  newFee      Int
+  changedById String?
+  createdAt   DateTime @default(now())
+
+  batch     Batch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  changedBy User? @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([batchId, createdAt])
+}
+
+// One row per batch assignment. Rows are never deleted when a student moves or a batch is
+// deleted; the row is closed (endedAt) and keeps the batch name, so history stays auditable.
+// A partial unique index (see migration) guarantees one open enrollment per student.
+model Enrollment {
+  id          String    @id @default(cuid())
+  studentId   String
+  batchId     String? // null once the batch itself has been deleted
+  batchName   String // snapshot, so history still reads correctly after the batch is deleted
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  reason      String?
+  endReason   String?
+  changedById String?
+  createdAt   DateTime  @default(now())
+
+  student   Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  batch     Batch?      @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  changedBy User?       @relation("EnrollmentChangedBy", fields: [changedById], references: [id], onDelete: SetNull)
+  charges   FeeCharge[]
+
+  @@index([studentId, startedAt])
+  @@index([batchId, endedAt])
+}
+
+// ───────────────────────────── Fees ─────────────────────────────
+
+enum ChargeType {
+  MONTHLY
+  ADMISSION
+  OTHER
+}
+
+enum ChargeStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  VOID
+}
+
+// A fee charge. `amount`, `billingPeriod`, `description`, `dueDate` and the batch
+// snapshot are fixed once created. Changes go through FeeAdjustment rows.
+model FeeCharge {
+  id              String       @id @default(cuid())
+  code            String       @unique // FC-000123
+  studentId       String
+  enrollmentId    String?
+  batchId         String?
+  batchNameAtCharge String?
+  type            ChargeType   @default(MONTHLY)
+  billingPeriod   String? // "2025-06" for monthly charges
+  description     String
+  amount          Int // original amount in paise — never updated
+  adjustmentTotal Int          @default(0) // sum of FeeAdjustment.amount (signed)
+  paidAmount      Int          @default(0) // sum of allocations from SUCCEEDED payments
+  dueDate         DateTime
+  status          ChargeStatus @default(PENDING)
+  dedupeKey       String?      @unique // e.g. MONTHLY:<studentId>:2025-06 — prevents double billing
+  voidedAt        DateTime?
+  voidReason      String?
+  createdById     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  student     Student            @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  enrollment  Enrollment?        @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  batch       Batch?             @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  createdBy   User?              @relation("ChargeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  adjustments FeeAdjustment[]
+  allocations PaymentAllocation[]
+  orderItems  PaymentOrderItem[]
+
+  @@index([studentId, status])
+  @@index([billingPeriod])
+  @@index([dueDate])
+}
+
+// Documented, signed change to a charge (negative = discount/waiver, positive = surcharge).
+model FeeAdjustment {
+  id          String   @id @default(cuid())
+  chargeId    String
+  amount      Int
+  reason      String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  charge    FeeCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)
+  createdBy User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([chargeId])
+}
+
+// ───────────────────────────── Payments ─────────────────────────────
+
+enum PaymentSource {
+  MANUAL
+  ONLINE
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CHEQUE
+  CARD
+  NET_BANKING
+  WALLET
+  ONLINE // gateway payment whose instrument is not yet known
+  OTHER
+}
+
+enum PaymentStatus {
+  CREATED // online order created, awaiting gateway
+  SUCCEEDED
+  FAILED
+  VOIDED // manual entry reversed by the teacher
+}
+
+model Payment {
+  id                   String        @id @default(cuid())
+  code                 String        @unique // PAY-8421
+  receiptNumber        String?       @unique // issued only when the payment succeeds
+  studentId            String
+  amount               Int
+  currency             String        @default("INR")
+  source               PaymentSource
+  method               PaymentMethod
+  status               PaymentStatus
+  paymentDate          DateTime?
+  transactionReference String?
+  notes                String?
+  recordedById         String?
+  provider             String?
+  providerOrderId      String?       @unique
+  providerPaymentId    String?       @unique // one gateway payment can never be recorded twice
+  failureReason        String?
+  idempotencyKey       String?       @unique // client-supplied key; a retried submit cannot record twice
+  verifiedAt           DateTime?
+  verifiedVia          String? // CHECKOUT_VERIFY | WEBHOOK | RECONCILE
+  voidedAt             DateTime?
+  voidReason           String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  student     Student             @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  recordedBy  User?               @relation("PaymentRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+  allocations PaymentAllocation[]
+  orderItems  PaymentOrderItem[]
+
+  @@index([studentId, createdAt])
+  @@index([status, paymentDate])
+}
+
+// Which charges an online order was created for (allocated only after verification).
+model PaymentOrderItem {
+  id        String @id @default(cuid())
+  paymentId String
+  chargeId  String
+  amount    Int
+
+  payment Payment   @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  charge  FeeCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, chargeId])
+}
+
+model PaymentAllocation {
+  id        String   @id @default(cuid())
+  paymentId String
+  chargeId  String
+  amount    Int
+  createdAt DateTime @default(now())
+
+  payment Payment   @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  charge  FeeCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, chargeId]) // a payment can be allocated to a charge only once
+  @@index([chargeId])
+}
+
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  eventId     String
+  eventType   String
+  payload     Json
+  status      String    @default("RECEIVED") // RECEIVED | PROCESSED | IGNORED | FAILED
+  error       String?
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@unique([provider, eventId])
+}
+
+// ───────────────────────────── System ─────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorRole  String? // ADMIN | STUDENT | SYSTEM
+  action     String // e.g. PAYMENT_RECORDED
+  entityType String
+  entityId   String?
+  summary    String
+  metadata   Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([action])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model Counter {
+  name  String @id
+  value Int
+}
