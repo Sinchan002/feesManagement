@@ -2,6 +2,7 @@ import type { Batch } from "@prisma/client"
 import { z } from "zod"
 import { prisma, type Db } from "../../lib/prisma"
 import { rupees, toRupees } from "../../lib/money"
+import { TIME_RE, batchTimeLabel, minutesOf, parseDays, scheduleSchema, timeSchema } from "../../lib/schedule"
 
 const statusSchema = z
   .string()
@@ -17,12 +18,20 @@ const batchFields = {
   name: z.string().trim().min(3, "Enter a descriptive batch name").max(120),
   classLevel: z.string().trim().min(1, "Enter the class level").max(40),
   subjects: subjectsSchema,
-  schedule: z.string().trim().min(3, "Enter the teaching days").max(120),
-  startTime: z.string().trim().min(3, "Enter the batch time").max(20),
-  endTime: z.string().trim().max(20).nullish(),
+  /** Teaching days, e.g. ["Mon","Wed","Fri"] or "Mon, Wed, Fri"; stored as "Mon, Wed, Fri". */
+  schedule: scheduleSchema,
+  /** 24-hour "HH:MM". */
+  startTime: timeSchema,
+  endTime: timeSchema,
   capacity: z.number().int().min(1, "Capacity must be at least 1").max(1000),
   monthlyFee: rupees({ allowZero: true }),
   status: statusSchema,
+}
+
+/** End must be after start (same day; batches don't run past midnight). */
+export function timeRangeError(start: string, end: string) {
+  if (!TIME_RE.test(start) || !TIME_RE.test(end)) return "Enter both a start and an end time"
+  return minutesOf(end) > minutesOf(start) ? null : "End time must be after the start time"
 }
 
 /** Map the frontend's `time` / `fee` names onto the canonical fields before validation. */
@@ -36,11 +45,16 @@ const aliases = (raw: unknown) => {
 
 export const createBatchSchema = z.preprocess(
   aliases,
-  z.object({
-    ...batchFields,
-    subjects: subjectsSchema.default([]),
-    status: statusSchema.default("ACTIVE"),
-  }),
+  z
+    .object({
+      ...batchFields,
+      subjects: subjectsSchema.default([]),
+      status: statusSchema.default("ACTIVE"),
+    })
+    .superRefine((b, ctx) => {
+      const error = timeRangeError(b.startTime, b.endTime)
+      if (error) ctx.addIssue({ code: "custom", message: error, path: ["endTime"] })
+    }),
 )
 
 export const updateBatchSchema = z.preprocess(aliases, z.object(batchFields).partial())
@@ -51,7 +65,7 @@ export type BatchInput = {
   subjects: string[]
   schedule: string
   startTime: string
-  endTime?: string | null
+  endTime: string
   capacity: number
   monthlyFee: number
   status: "ACTIVE" | "PAUSED" | "ARCHIVED"
@@ -75,9 +89,11 @@ export function serializeBatch(b: Batch, students = 0) {
     classLevel: b.classLevel,
     subjects: b.subjects,
     schedule: b.schedule,
+    /** Parsed days for the editor's checkboxes ([] if the stored value isn't valid days). */
+    days: parseDays(b.schedule) ?? [],
     startTime: b.startTime,
     endTime: b.endTime,
-    time: b.endTime ? `${b.startTime} – ${b.endTime}` : b.startTime,
+    time: batchTimeLabel(b.startTime, b.endTime),
     capacity: b.capacity,
     students,
     seatsAvailable: Math.max(0, b.capacity - students),

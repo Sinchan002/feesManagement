@@ -47,10 +47,29 @@ export const optionalText = (max: number) =>
     .nullish()
     .transform((v) => (v ? v : null))
 
+/**
+ * Indian phone numbers: 10 digits, optionally prefixed with +91 / 91 / 0. Spaces, dashes and
+ * brackets are allowed for readability ("+91 98765 43210"). Mobiles start with 6–9.
+ */
+const PHONE_SEPARATORS = /[\s()-]/g
+const MOBILE_RE = /^(?:\+91|91|0)?[6-9]\d{9}$/
+const ANY_PHONE_RE = /^(?:\+91|91|0)?\d{10}$/ // also allows landlines with STD code
+export const isMobile = (v: string) => MOBILE_RE.test(v.replace(PHONE_SEPARATORS, ""))
+export const isPhone = (v: string) => ANY_PHONE_RE.test(v.replace(PHONE_SEPARATORS, ""))
+
+/** Student / parent mobile number. */
 export const phoneSchema = z
   .string()
   .trim()
-  .regex(/^\+?[0-9 ()-]{10,20}$/, "Enter a valid phone number")
+  .max(20, "Enter a valid 10-digit mobile number")
+  .refine(isMobile, "Enter a valid 10-digit mobile number (optionally with +91)")
+
+/** Academy phone: mobile or landline (with STD code). */
+export const landlineOrMobileSchema = z
+  .string()
+  .trim()
+  .max(20, "Enter a valid phone number")
+  .refine(isPhone, "Enter a valid 10-digit phone number, with STD code for landlines (e.g. 03242 255123)")
 
 export const csvEscape = (value: unknown) => {
   const s = value === null || value === undefined ? "" : String(value)

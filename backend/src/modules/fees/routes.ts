@@ -7,14 +7,16 @@ import { badRequest, conflict, notFound } from "../../lib/errors"
 import { actorFrom, audit } from "../../lib/audit"
 import { nextChargeCode } from "../../lib/codes"
 import { rupees, toRupees } from "../../lib/money"
-import { dueDateFor, periodLabel } from "../../lib/dates"
+import { academyToday, dueDateFor, periodLabel } from "../../lib/dates"
 import { assertCanAccessStudent, authenticate, requireAdmin } from "../../middleware/auth"
 import { getSettings } from "../settings/service"
 import { currentEnrollment } from "../students/service"
 import {
   addAdjustment,
+  applyAdvanceCredit,
   chargeInclude,
   generateMonthlyCharges,
+  monthlyGenerationStatus,
   lockCharges,
   monthlyDedupeKey,
   serializeCharge,
@@ -63,6 +65,11 @@ feesRouter.get("/charges", requireAdmin, async (req, res) => {
     prisma.feeCharge.findMany({ where, include: chargeInclude, orderBy: [{ dueDate: "desc" }, { code: "desc" }], ...paginate(q) }),
   ])
   res.json({ data: rows.map(serializeCharge), meta: pageMeta(total, q) })
+})
+
+/** Students with no fee yet for the current month (the "generate fees" reminder). Must stay above "/charges/:id". */
+feesRouter.get("/charges/generation-status", requireAdmin, async (_req, res) => {
+  res.json({ data: await monthlyGenerationStatus(academyToday().period) })
 })
 
 /** Admins can read any charge; students only their own. */
@@ -144,7 +151,8 @@ feesRouter.post("/charges", requireAdmin, async (req, res) => {
       },
       tx,
     )
-    return created
+    await applyAdvanceCredit(tx, student.id, actorFrom(req))
+    return tx.feeCharge.findUniqueOrThrow({ where: { id: created.id }, include: chargeInclude })
   })
   res.status(201).json({ data: serializeCharge(charge) })
 })

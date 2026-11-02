@@ -13,6 +13,7 @@ import {
   createBatchSchema,
   enrolledCounts,
   serializeBatch,
+  timeRangeError,
   updateBatchSchema,
   type BatchInput,
 } from "./service"
@@ -119,7 +120,7 @@ batchesRouter.post("/", async (req, res) => {
   const input = parse(createBatchSchema, req.body) as unknown as BatchInput
   const batch = await prisma.$transaction(async (tx) => {
     const created = await tx.batch.create({
-      data: { ...input, endTime: input.endTime ?? null, code: await nextBatchCode(tx) },
+      data: { ...input, code: await nextBatchCode(tx) },
     })
     await tx.batchFeeChange.create({
       data: { batchId: created.id, oldFee: null, newFee: created.monthlyFee, changedById: req.auth!.userId },
@@ -150,6 +151,11 @@ batchesRouter.patch("/:id", async (req, res) => {
     const enrolled = (await enrolledCounts([id], tx)).get(id) ?? 0
     if (input.capacity !== undefined && input.capacity < enrolled) {
       throw badRequest(`Capacity cannot be lower than current enrollment (${enrolled}).`)
+    }
+    // Validate the time range as it will be after this update (one side may come from the saved batch).
+    if (input.startTime !== undefined || input.endTime !== undefined) {
+      const error = timeRangeError(input.startTime ?? before.startTime, input.endTime ?? before.endTime ?? "")
+      if (error) throw badRequest(error, { fields: [{ field: "endTime", message: error }] })
     }
     const updated = await tx.batch.update({ where: { id }, data: input })
 

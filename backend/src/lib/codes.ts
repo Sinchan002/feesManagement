@@ -28,3 +28,4 @@ export async function nextReceiptNumber(db: Db, date = new Date()) {
   const year = date.getFullYear()
   return `RCPT-${year}-${pad(await nextNumber(db, `receipt-${year}`), 6)}`
 }
+export const nextUpiClaimCode = async (db: Db) => `UPI-${pad(await nextNumber(db, "upi"), 4)}`

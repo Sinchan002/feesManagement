@@ -1,7 +1,8 @@
 // All money columns are stored as integer paise (₹1 = 100). The API speaks rupees.
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
@@ -42,6 +43,7 @@ model User {
   registrations       Registration[]       @relation("RegistrationApplicant")
   reviewedRegs        Registration[]       @relation("RegistrationReviewer")
   recordedPayments    Payment[]            @relation("PaymentRecorder")
+  reviewedUpiClaims   UpiClaim[]           @relation("UpiClaimReviewer")
   enrollmentsChanged  Enrollment[]         @relation("EnrollmentChangedBy")
   adjustmentsCreated  FeeAdjustment[]
   chargesCreated      FeeCharge[]          @relation("ChargeCreatedBy")
@@ -149,6 +151,7 @@ model Student {
   enrollments Enrollment[]
   charges     FeeCharge[]
   payments    Payment[]
+  upiClaims   UpiClaim[]
 
   @@index([status])
 }
@@ -266,6 +269,7 @@ model FeeCharge {
   adjustments FeeAdjustment[]
   allocations PaymentAllocation[]
   orderItems  PaymentOrderItem[]
+  upiItems    UpiClaimItem[]
 
   @@index([studentId, status])
   @@index([billingPeriod])
@@ -343,6 +347,7 @@ model Payment {
   recordedBy  User?               @relation("PaymentRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
   allocations PaymentAllocation[]
   orderItems  PaymentOrderItem[]
+  upiClaim    UpiClaim?
 
   @@index([studentId, createdAt])
   @@index([status, paymentDate])
@@ -419,4 +424,53 @@ model Setting {
 model Counter {
   name  String @id
   value Int
+}
+
+// ───────────────────────────── UPI payments (teacher verifies) ─────────────────────────────
+
+enum UpiClaimStatus {
+  PENDING // student says they paid; waiting for the teacher to check the bank/UPI app
+  APPROVED // teacher verified it; a Payment was recorded and the fees marked paid
+  REJECTED
+}
+
+// A student's report "I paid ₹X by UPI, reference N". Nothing is marked paid until the teacher
+// approves it. Approving records an ordinary manual UPI Payment (receipt, allocation, audit).
+model UpiClaim {
+  id                   String         @id @default(cuid())
+  code                 String         @unique // UPI-0001
+  studentId            String
+  amount               Int // paise the student says they sent
+  transactionReference String // UTR / UPI transaction id
+  paymentDate          DateTime // when the student says they paid
+  notes                String?
+  status               UpiClaimStatus @default(PENDING)
+  reviewedById         String?
+  reviewedAt           DateTime?
+  reviewNote           String?
+  paymentId            String?        @unique
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  student    Student        @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  reviewedBy User?          @relation("UpiClaimReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  payment    Payment?       @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  items      UpiClaimItem[]
+
+  @@index([status, createdAt])
+  @@index([studentId, createdAt])
+}
+
+// The fees the student says the payment was for.
+model UpiClaimItem {
+  id        String @id @default(cuid())
+  claimId   String
+  chargeId  String
+  amount    Int // outstanding on that fee when the claim was made
+
+  claim  UpiClaim  @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  charge FeeCharge @relation(fields: [chargeId], references: [id], onDelete: Restrict)
+
+  @@unique([claimId, chargeId])
+  @@index([chargeId])
 }

@@ -3,3 +3,5 @@ dist
 .env
 .env.test
 coverage
+payment/
+.env.example

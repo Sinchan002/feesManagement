@@ -1,4 +1,5 @@
 import { Router } from "express"
+import { batchTimeLabel } from "../../lib/schedule"
 import { z } from "zod"
 import type { Batch, Prisma, Registration, User } from "@prisma/client"
 import { prisma } from "../../lib/prisma"
@@ -172,7 +173,7 @@ registrationsRouter.post("/:id/approve", async (req, res) => {
       subject: reg.kind === "REALLOCATION" ? "You have a new batch" : "Your registration has been approved",
       text: `Hello ${reg.name},\n\n${
         reg.kind === "REALLOCATION" ? "You have been moved" : "Your registration has been approved and you have been allocated"
-      } to ${batch.name} (${batch.schedule}, ${batch.startTime}).${
+      } to ${batch.name} (${batch.schedule}, ${batchTimeLabel(batch.startTime, batch.endTime)}).${
         charge
           ? `\n\nYour fee of ₹${toRupees(charge.amount).toLocaleString("en-IN")} for ${
               charge.billingPeriod ? periodLabel(charge.billingPeriod) : "this month"

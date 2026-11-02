@@ -22,18 +22,23 @@ import { batchesApi } from "../../services/api"
 import type { Batch } from "../../services/types"
 import { errorMessage, inr, useAsync } from "../../lib/format"
 import { CLASS_SUGGESTIONS, SUBJECT_SUGGESTIONS } from "../../lib/academics"
+import { TIME_RE, WEEKDAYS, knownDays, minutesOf, toTimeInput } from "../../lib/validation"
 
 const batchSchema = z.object({
   name: z.string().trim().min(3, "Enter a descriptive batch name").max(120),
   classLevel: z.string().trim().min(1, "Enter the class level").max(40),
   subjects: z.string().trim().max(300),
-  schedule: z.string().trim().min(3, "Enter the teaching days").max(120),
-  startTime: z.string().trim().min(3, "Enter the start time").max(20),
-  endTime: z.string().trim().max(20),
+  days: z.array(z.enum(WEEKDAYS)).min(1, "Choose at least one teaching day"),
+  startTime: z.string().regex(TIME_RE, "Choose a start time"),
+  endTime: z.string().regex(TIME_RE, "Choose an end time"),
   capacity: z.number({ error: "Enter a number" }).int().min(1, "Capacity must be at least 1").max(1000),
   monthlyFee: z.number({ error: "Enter a number" }).min(0, "Fee cannot be negative"),
   status: z.enum(["ACTIVE", "PAUSED", "ARCHIVED"]),
 })
+  .refine((b) => !TIME_RE.test(b.startTime) || !TIME_RE.test(b.endTime) || minutesOf(b.endTime) > minutesOf(b.startTime), {
+    message: "End time must be after the start time",
+    path: ["endTime"],
+  })
 type BatchFormValues = z.infer<typeof batchSchema>
 
 const statusTone = { ACTIVE: "green", PAUSED: "amber", ARCHIVED: "slate" } as const
@@ -65,16 +70,23 @@ function BatchEditor({
           name: batch.name,
           classLevel: batch.classLevel,
           subjects: batch.subjects.join(", "),
-          schedule: batch.schedule,
-          startTime: batch.startTime,
-          endTime: batch.endTime ?? "",
+          // Batches saved before validation may hold free text; keep whatever can be recognised.
+          days: knownDays(batch.schedule),
+          startTime: toTimeInput(batch.startTime),
+          endTime: toTimeInput(batch.endTime),
           capacity: batch.capacity,
           monthlyFee: batch.monthlyFee,
           status: batch.status,
         }
-      : { name: "", classLevel: "", subjects: "", schedule: "", startTime: "", endTime: "", capacity: 20, monthlyFee: 0, status: "ACTIVE" },
+      : { name: "", classLevel: "", subjects: "", days: [], startTime: "", endTime: "", capacity: 20, monthlyFee: 0, status: "ACTIVE" },
   })
   const fee = watch("monthlyFee")
+  // True when the saved schedule/times weren't fully readable (entered before validation existed).
+  const legacy =
+    batch !== undefined &&
+    (knownDays(batch.schedule).join(", ") !== batch.schedule.trim() ||
+      toTimeInput(batch.startTime) !== batch.startTime ||
+      toTimeInput(batch.endTime) !== (batch.endTime ?? ""))
   const feeChanged = batch && Number(fee) !== batch.monthlyFee
 
   const submit = async (values: BatchFormValues) => {
@@ -83,10 +95,11 @@ function BatchEditor({
       setSubmitError(`Capacity cannot be lower than current enrollment (${batch.students}).`)
       return
     }
+    const { days, ...rest } = values
     const input = {
-      ...values,
+      ...rest,
+      schedule: days.join(", "),
       subjects: values.subjects.split(",").map((s) => s.trim()).filter(Boolean),
-      endTime: values.endTime || null,
     }
     try {
       const saved = batch ? await batchesApi.update(batch.id, input) : await batchesApi.create(input)
@@ -141,15 +154,30 @@ ${batch.students} student(s) in this batch will NOT be deleted: they will be mov
             <Input placeholder={`e.g. ${SUBJECT_SUGGESTIONS.slice(0, 2).join(", ")}`} {...register("subjects")} />
           </Field>
           <div className="sm:col-span-2">
-            <Field label="Teaching days" error={errors.schedule?.message}>
-              <Input placeholder="e.g. Mon, Wed, Fri" {...register("schedule")} />
-            </Field>
+            <p className="mb-1.5 text-sm font-medium text-slate-700">Teaching days</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Teaching days">
+              {WEEKDAYS.map((d) => (
+                <label
+                  key={d}
+                  className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50 has-[:checked]:text-blue-700"
+                >
+                  <input type="checkbox" value={d} className="size-4" {...register("days")} />
+                  {d}
+                </label>
+              ))}
+            </div>
+            {errors.days && <span className="mt-1 block text-xs text-red-600">{errors.days.message}</span>}
+            {legacy && (
+              <p className="mt-1.5 text-xs text-amber-700">
+                Saved as “{batch!.schedule}, {batch!.time}” before checks existed — please confirm the days and times.
+              </p>
+            )}
           </div>
           <Field label="Start time" error={errors.startTime?.message}>
-            <Input placeholder="e.g. 5:00 PM" {...register("startTime")} />
+            <Input type="time" {...register("startTime")} />
           </Field>
-          <Field label="End time (optional)" error={errors.endTime?.message}>
-            <Input placeholder="e.g. 6:30 PM" {...register("endTime")} />
+          <Field label="End time" error={errors.endTime?.message}>
+            <Input type="time" {...register("endTime")} />
           </Field>
           <Field label={`Maximum capacity${batch ? ` (${batch.students} enrolled)` : ""}`} error={errors.capacity?.message}>
             <Input type="number" min="1" {...register("capacity", { valueAsNumber: true })} />

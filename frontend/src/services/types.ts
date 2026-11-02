@@ -70,6 +70,8 @@ export type Batch = {
   capacity: number
   students: number
   seatsAvailable: number
+  /** Recognised teaching days (empty if the saved value predates validation). */
+  days: string[]
   monthlyFee: number
   status: BatchStatus
   createdAt: string
@@ -218,6 +220,7 @@ export type DashboardReport = {
     collectionRate: number | null
     collectionRateChange: number | null
     pendingRegistrations: number
+    pendingUpiClaims: number
   }
   trend: { period: string; month: string; collected: number; due: number }[]
   latestPayments: Payment[]
@@ -282,6 +285,10 @@ export type StudentDashboard = {
   recentPayments: Payment[]
   latestReceiptPaymentId: string | null
   onlinePaymentMethods: Settings["paymentMethods"]
+  upi: { configured: boolean }
+  upiClaims: UpiClaim[]
+  /** Fees that already have a UPI payment waiting for the teacher. */
+  pendingClaimChargeIds: string[]
 }
 
 export type OnlineOrder = {
@@ -301,4 +308,40 @@ export type CheckoutResult = {
   razorpay_order_id: string
   razorpay_payment_id: string
   razorpay_signature: string
+}
+
+// ───────────── UPI payments ─────────────
+
+export type UpiConfig = {
+  configured: boolean
+  upiId: string
+  payeeName: string
+  hasQr: boolean
+  /** The teacher's QR image as a data: URL (null until uploaded). */
+  qrDataUrl: string | null
+}
+
+export type UpiClaim = {
+  id: string
+  code: string
+  status: "PENDING" | "APPROVED" | "REJECTED"
+  student: { id: string; code: string; name: string }
+  amount: number
+  transactionReference: string
+  paymentDate: string
+  notes: string | null
+  items: {
+    chargeId: string
+    code: string
+    description: string
+    billingPeriod: string | null
+    claimedAmount: number
+    outstandingNow: number
+    dueDate: string
+  }[]
+  reviewedBy: string | null
+  reviewedAt: string | null
+  reviewNote: string | null
+  payment: { id: string; code: string; receiptNumber: string | null } | null
+  createdAt: string
 }

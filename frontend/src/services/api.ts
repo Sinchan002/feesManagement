@@ -19,6 +19,8 @@ import type {
   Student,
   StudentDashboard,
   StudentDetail,
+  UpiClaim,
+  UpiConfig,
 } from "./types"
 
 // ───────────── Token storage ─────────────
@@ -110,6 +112,7 @@ const getPaged = async <T>(url: string, params?: object): Promise<Paged<T>> => {
 const post = async <T>(url: string, body?: object, headers?: Record<string, string>) =>
   (await http.post<Envelope<T>>(url, body ?? {}, { headers })).data.data
 const patch = async <T>(url: string, body: object) => (await http.patch<Envelope<T>>(url, body)).data.data
+const put = async <T>(url: string, body: object) => (await http.put<Envelope<T>>(url, body)).data.data
 const del = async <T>(url: string, body?: object) => (await http.delete<Envelope<T>>(url, { data: body })).data.data
 
 /** Download an authenticated file (PDF / CSV) and save it in the browser. */
@@ -161,7 +164,7 @@ export type BatchInput = {
   subjects: string[]
   schedule: string
   startTime: string
-  endTime?: string | null
+  endTime: string
   capacity: number
   monthlyFee: number
   status: Batch["status"]
@@ -221,6 +224,7 @@ export const feesApi = {
     getPaged<Charge[]>("/fees/charges", clean(params)),
   generate: (period: string, batchId?: string) =>
     post<{ period: string; created: number; alreadyBilled: number; skippedZeroFee: number }>("/fees/charges/generate", clean({ period, batchId })),
+  generationStatus: () => get<{ period: string; pendingStudents: number }>("/fees/charges/generation-status"),
   adjust: (chargeId: string, amount: number, reason: string) => post<Charge>(`/fees/charges/${chargeId}/adjustments`, { amount, reason }),
   void: (chargeId: string, reason: string) => post<Charge>(`/fees/charges/${chargeId}/void`, { reason }),
   sendReminders: () => post<{ studentsNotified: number; parentsNotified: number }>("/fees/reminders/send"),
@@ -284,4 +288,25 @@ export const meApi = {
   payments: () => get<Payment[]>("/me/payments"),
   charges: (status: "OPEN" | "PAID" | "ALL" = "ALL") => get<Charge[]>("/me/charges", { status }),
   enrollments: () => get<Enrollment[]>("/me/enrollments"),
+}
+
+export const upiApi = {
+  /** Teacher's UPI ID, payee name and QR image (students read it to pay). */
+  config: () => get<UpiConfig>("/upi/config"),
+  saveDetails: (input: { upiId: string; payeeName: string }) => put<UpiConfig>("/upi/config", input),
+  uploadQr: async (file: Blob) =>
+    (await http.put<Envelope<UpiConfig>>("/upi/qr", file, { headers: { "Content-Type": file.type } })).data.data,
+  removeQr: () => del<UpiConfig>("/upi/qr"),
+  /** Student: report a UPI payment for the chosen fees. The server works out the amount. */
+  submitClaim: (input: { chargeIds: string[]; transactionReference: string; paymentDate?: string; notes?: string }) =>
+    post<UpiClaim>("/upi/claims", input),
+  myClaims: () => get<UpiClaim[]>("/upi/claims/mine"),
+  /** Teacher: claims waiting for verification (or "ALL"). */
+  claims: async (status: "PENDING" | "APPROVED" | "REJECTED" | "ALL" = "PENDING") => {
+    const res = (await http.get<Envelope<UpiClaim[]>>("/upi/claims", { params: { status } })).data
+    return { items: res.data, pendingCount: Number(res.meta?.pendingCount ?? 0) }
+  },
+  approve: (id: string, input: { chargeIds?: string[]; amount?: number; note?: string }) =>
+    post<UpiClaim>(`/upi/claims/${id}/approve`, input),
+  reject: (id: string, reason: string) => post<UpiClaim>(`/upi/claims/${id}/reject`, { reason }),
 }

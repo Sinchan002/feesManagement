@@ -52,7 +52,7 @@ reportsRouter.get("/dashboard", async (req, res) => {
   const period = month ?? currentPeriod()
   const previous = addMonths(period, -1)
 
-  const [collected, collectedPrev, billing, billingPrev, allStandings, activeStudents, newStudents, pendingRegistrations, latestPayments, recentActivity] =
+  const [collected, collectedPrev, billing, billingPrev, allStandings, activeStudents, newStudents, pendingRegistrations, latestPayments, recentActivity, pendingUpiClaims] =
     await Promise.all([
       collectedIn(period),
       collectedIn(previous),
@@ -74,6 +74,7 @@ reportsRouter.get("/dashboard", async (req, res) => {
         where: { action: { notIn: ["LOGIN", "PAYMENT_ORDER_CREATED"] } },
         include: { actor: { select: { name: true } } },
       }),
+      prisma.upiClaim.count({ where: { status: "PENDING" } }),
     ])
 
   const withDues = [...allStandings.values()].filter((s) => s.outstanding > 0)
@@ -106,6 +107,7 @@ reportsRouter.get("/dashboard", async (req, res) => {
         collectionRateChange:
           billing.rate !== null && billingPrev.rate !== null ? Math.round((billing.rate - billingPrev.rate) * 10) / 10 : null,
         pendingRegistrations,
+        pendingUpiClaims,
       },
       trend,
       latestPayments: latestPayments.map(serializePayment),

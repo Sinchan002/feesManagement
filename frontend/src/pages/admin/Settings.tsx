@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react"
+import { PHONE_MESSAGE, isPhone } from "../../lib/validation"
+import { UpiDetailsCard } from "./UpiDetailsCard"
 import { Building2, Check, CircleDollarSign, KeyRound, Mail, RefreshCw } from "lucide-react"
 import { Alert, Badge, Button, Card, ErrorState, Field, Input, LoadingState, PageHeader, Select, Spinner } from "../../components/ui"
 import { authApi, settingsApi } from "../../services/api"
@@ -21,6 +23,10 @@ export function SettingsPage() {
 
   const save = async () => {
     if (!form) return
+    if (form.academy.phone.trim() && !isPhone(form.academy.phone)) {
+      setNotice({ tone: "red", text: `Academy phone: ${PHONE_MESSAGE}` })
+      return
+    }
     setSaving(true)
     setNotice(null)
     try {
@@ -62,7 +68,14 @@ export function SettingsPage() {
                 <Input value={form.academy.address} onChange={(e) => set("academy", { address: e.target.value })} />
               </Field>
               <Field label="Phone">
-                <Input value={form.academy.phone} onChange={(e) => set("academy", { phone: e.target.value })} />
+                <Input
+                  value={form.academy.phone}
+                  placeholder="e.g. 98765 43210 or 03242 255123"
+                  onChange={(e) => set("academy", { phone: e.target.value })}
+                />
+                {form.academy.phone.trim() && !isPhone(form.academy.phone) && (
+                  <span className="mt-1 block text-xs text-red-600">{PHONE_MESSAGE}</span>
+                )}
               </Field>
             </div>
           </Card>
@@ -151,6 +164,7 @@ export function SettingsPage() {
               <p className="mt-3 text-xs text-amber-700">With no online method enabled, students cannot pay online.</p>
             )}
           </Card>
+          <UpiDetailsCard />
           <Button onClick={save} disabled={saving}>
             {saving ? <Spinner /> : notice?.tone === "green" ? <Check className="size-4" /> : <RefreshCw className="size-4" />}
             Save changes
@@ -167,10 +181,12 @@ export function SettingsPage() {
                   <Badge tone={h.emailProvider === "CONNECTED" ? "green" : "amber"}>{h.emailProvider === "CONNECTED" ? "Connected" : "Not configured (console only)"}</Badge>
                 </Row>
                 <Row label="Payment gateway">
-                  <Badge tone={h.paymentGatewayLive ? "green" : "amber"}>{h.paymentGatewayLive ? "Razorpay (live)" : "Test mode"}</Badge>
+                  <Badge tone={h.paymentGatewayLive ? "green" : h.paymentGateway === "none" ? "slate" : "amber"}>
+                    {h.paymentGatewayLive ? "Razorpay (live)" : h.paymentGateway === "none" ? "Not used (UPI only)" : "Test mode"}
+                  </Badge>
                 </Row>
                 <Row label="Scheduler">
-                  <Badge tone={h.schedulerEnabled ? "blue" : "slate"}>{h.schedulerEnabled ? "Running" : "Disabled"}</Badge>
+                  <Badge tone={h.schedulerEnabled ? "blue" : "slate"}>{h.schedulerEnabled ? "Running" : "Manual (generate fees yourself)"}</Badge>
                 </Row>
                 <Row label="Last fee generation">
                   <span className="font-semibold">{h.lastChargeGeneration ? periodLabel(h.lastChargeGeneration) : "Never"}</span>

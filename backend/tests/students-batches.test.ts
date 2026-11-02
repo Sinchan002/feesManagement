@@ -14,7 +14,7 @@ describe("batches", () => {
     const b = await createBatch(admin)
     expect(b).toMatchObject({ monthlyFee: 3200 })
     const list = await api().get("/api/batches").set(auth(admin))
-    expect(list.body.data[0]).toMatchObject({ name: "Grade 10 • Mathematics", time: "5:00 PM", status: "ACTIVE", students: 0, capacity: 30 })
+    expect(list.body.data[0]).toMatchObject({ name: "Grade 10 • Mathematics", time: "5:00 PM – 6:30 PM", days: ["Mon", "Wed", "Fri"], status: "ACTIVE", students: 0, capacity: 30 })
 
     const res = await api().patch(`/api/batches/${b.id}`).set(auth(admin)).send({ status: "Paused", schedule: "Tue, Thu" })
     expect(res.body.data).toMatchObject({ status: "PAUSED", schedule: "Tue, Thu" })

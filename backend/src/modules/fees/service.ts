@@ -142,6 +142,8 @@ export async function addAdjustment(
     where: { id: charge.id },
     data: { adjustmentTotal, status: statusFor({ ...charge, adjustmentTotal }) },
   })
+  // A surcharge raises what is owed — use any advance credit for it.
+  if (opts.amount > 0) await applyAdvanceCredit(tx, charge.studentId, opts.actor)
   await audit(
     opts.actor,
     {
@@ -157,6 +159,68 @@ export async function addAdjustment(
 }
 
 export const monthlyDedupeKey = (studentId: string, period: string) => `MONTHLY:${studentId}:${period}`
+
+/**
+ * Use a student's advance credit — the unallocated part of earlier successful payments — to pay
+ * their open fees, oldest credit and oldest fee first. Call it inside the same transaction
+ * whenever a fee is created or increased. Returns the amount applied (paise).
+ */
+export async function applyAdvanceCredit(tx: Tx, studentId: string, actor: Actor) {
+  // Lock the student's payments, then their open charges (same order as elsewhere: payments → charges).
+  await tx.$queryRaw`SELECT id FROM "Payment" WHERE "studentId" = ${studentId} AND status = 'SUCCEEDED' ORDER BY id FOR UPDATE`
+  const payments = await tx.payment.findMany({
+    where: { studentId, status: "SUCCEEDED" },
+    include: { allocations: { select: { chargeId: true, amount: true } } },
+    orderBy: [{ paymentDate: "asc" }, { createdAt: "asc" }],
+  })
+  const credits = payments
+    .map((p) => ({
+      payment: p,
+      left: p.amount - p.allocations.reduce((s, a) => s + a.amount, 0),
+      usedOn: new Set(p.allocations.map((a) => a.chargeId)),
+    }))
+    .filter((c) => c.left > 0)
+  if (credits.length === 0) return 0
+
+  const open = await tx.feeCharge.findMany({
+    where: { studentId, status: { in: ["PENDING", "PARTIALLY_PAID"] } },
+    select: { id: true },
+  })
+  const charges = (await lockCharges(tx, open.map((c) => c.id))).sort(
+    (a, b) => a.dueDate.getTime() - b.dueDate.getTime() || a.createdAt.getTime() - b.createdAt.getTime(),
+  )
+
+  let applied = 0
+  const used: string[] = []
+  for (let charge of charges) {
+    for (const credit of credits) {
+      const due = outstandingOf(charge)
+      if (due <= 0) break
+      // A payment can be allocated to a given charge only once (unique paymentId+chargeId).
+      if (credit.left <= 0 || credit.usedOn.has(charge.id)) continue
+      const amount = Math.min(due, credit.left)
+      charge = await allocate(tx, charge, credit.payment.id, amount)
+      credit.left -= amount
+      credit.usedOn.add(charge.id)
+      applied += amount
+      used.push(`${credit.payment.code} → ${charge.code} ₹${toRupees(amount)}`)
+    }
+  }
+  if (applied > 0) {
+    await audit(
+      actor,
+      {
+        action: "CREDIT_APPLIED",
+        entityType: "Student",
+        entityId: studentId,
+        summary: `₹${toRupees(applied)} of advance credit applied to new fees (${used.join(", ")})`,
+        metadata: { applied: toRupees(applied), allocations: used },
+      },
+      tx,
+    )
+  }
+  return applied
+}
 
 /** A student placed in a batch on days 1–14 (India time) is billed for that month immediately. */
 export const JOINING_BILLING_CUTOFF_DAY = 15
@@ -227,7 +291,8 @@ export async function billOnPlacement(
     },
     tx,
   )
-  return charge
+  await applyAdvanceCredit(tx, opts.studentId, opts.actor)
+  return tx.feeCharge.findUniqueOrThrow({ where: { id: charge.id } })
 }
 
 /**
@@ -235,6 +300,36 @@ export async function billOnPlacement(
  * The batch's CURRENT fee is copied into the charge; later fee changes never touch it.
  * Idempotent: a student is billed at most once per period (unique dedupe key).
  */
+/** Who should be billed for a month, and who of those has no charge for it yet. */
+async function monthlyBillingPlan(period: string, batchId?: string) {
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      endedAt: null,
+      startedAt: { lt: periodEnd(period) },
+      student: { status: "ACTIVE" },
+      batch: { status: "ACTIVE", ...(batchId ? { id: batchId } : {}) },
+    },
+    include: { batch: true },
+  })
+  // The query only returns enrollments in an existing ACTIVE batch; the guard narrows the type.
+  const withBatch = enrollments.filter((e): e is typeof e & { batch: NonNullable<typeof e.batch> } => e.batch !== null)
+  const candidates = withBatch.filter((e) => e.batch.monthlyFee > 0)
+  const keys = candidates.map((e) => monthlyDedupeKey(e.studentId, period))
+  const existing = new Set(
+    (await prisma.feeCharge.findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } })).map(
+      (c) => c.dedupeKey,
+    ),
+  )
+  const toCreate = candidates.filter((e) => !existing.has(monthlyDedupeKey(e.studentId, period)))
+  return { withBatch, candidates, toCreate }
+}
+
+/** How many students still have no fee for a month — drives the "generate fees" reminder banner. */
+export async function monthlyGenerationStatus(period: string) {
+  const { toCreate } = await monthlyBillingPlan(period)
+  return { period, pendingStudents: toCreate.length }
+}
+
 export async function generateMonthlyCharges(opts: {
   period: string
   batchId?: string
@@ -243,25 +338,7 @@ export async function generateMonthlyCharges(opts: {
 }) {
   const settings = await getSettings()
   const dueDate = opts.dueDate ?? dueDateFor(opts.period, settings.billing.dueDay)
-  const enrollments = await prisma.enrollment.findMany({
-    where: {
-      endedAt: null,
-      startedAt: { lt: periodEnd(opts.period) },
-      student: { status: "ACTIVE" },
-      batch: { status: "ACTIVE", ...(opts.batchId ? { id: opts.batchId } : {}) },
-    },
-    include: { batch: true },
-  })
-  // The query only returns enrollments in an existing ACTIVE batch; the guard narrows the type.
-  const withBatch = enrollments.filter((e): e is typeof e & { batch: NonNullable<typeof e.batch> } => e.batch !== null)
-  const candidates = withBatch.filter((e) => e.batch.monthlyFee > 0)
-  const keys = candidates.map((e) => monthlyDedupeKey(e.studentId, opts.period))
-  const existing = new Set(
-    (await prisma.feeCharge.findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } })).map(
-      (c) => c.dedupeKey,
-    ),
-  )
-  const toCreate = candidates.filter((e) => !existing.has(monthlyDedupeKey(e.studentId, opts.period)))
+  const { withBatch, candidates, toCreate } = await monthlyBillingPlan(opts.period, opts.batchId)
 
   const created = await prisma.$transaction(async (tx) => {
     const rows = []
@@ -293,6 +370,8 @@ export async function generateMonthlyCharges(opts: {
       },
       tx,
     )
+    // New fees are paid from any advance credit the students already have.
+    for (const studentId of new Set(rows.map((r) => r.studentId))) await applyAdvanceCredit(tx, studentId, opts.actor)
     return result.count
   })
 

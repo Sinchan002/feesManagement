@@ -24,7 +24,7 @@ const schema = z.object({
   SMTP_PASSWORD: z.string().optional().default(""),
   MAIL_FROM: z.string().default("SriKrishna Physics Academy <fees@srikrishnaphysics.in>"),
 
-  PAYMENT_PROVIDER: z.enum(["razorpay", "mock"]).default("mock"),
+  PAYMENT_PROVIDER: z.enum(["razorpay", "mock", "none"]).default("mock"),
   PAYMENT_CURRENCY: z.string().length(3).default("INR"),
   RAZORPAY_KEY_ID: z.string().optional().default(""),
   RAZORPAY_KEY_SECRET: z.string().optional().default(""),

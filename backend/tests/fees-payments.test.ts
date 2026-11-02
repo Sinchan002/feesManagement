@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { currentPeriod, addMonths } from "../src/lib/dates"
 import { getPaymentProvider } from "../src/modules/payments/providers"
 import type { MockProvider } from "../src/modules/payments/providers/mock"
-import { api, auth, createAdmin, createBatch, createStudent, prisma, resetDb } from "./helpers"
+import { api, auth, createAdmin, createBatch, createStudent, login, prisma, resetDb } from "./helpers"
 import { withRealClock } from "./setup-clock"
 
 let admin: string
@@ -22,6 +22,14 @@ const generate = (p = period) => api().post("/api/fees/charges/generate").set(au
 const charges = () => prisma.feeCharge.findMany({ where: { studentId: student.studentId }, orderBy: { createdAt: "asc" } })
 
 describe("fee charges", () => {
+  it("reports how many students still need this month's fee", async () => {
+    const status = () => api().get("/api/fees/charges/generation-status").set(auth(admin))
+    const before = (await status()).body.data
+    expect(before.pendingStudents).toBe(1)
+    await generate(before.period)
+    expect((await status()).body.data.pendingStudents).toBe(0)
+  })
+
   it("generates monthly charges idempotently", async () => {
     const first = await generate()
     expect(first.body.data.created).toBe(1)
@@ -158,11 +166,14 @@ describe("online payments", () => {
     await generate()
     // Order reuse compares Date.now() with Prisma's own createdAt, so use the real clock here.
     await withRealClock(async () => {
-      const res = await api().post("/api/payments/online/orders").set(auth(student.token)).send({ amount: 1 })
+      // Sessions made under the pinned clock may already be expired in real time — sign in again.
+      const token = await login(student.email, student.password)
+      const order = () => api().post("/api/payments/online/orders").set(auth(token)).send({ amount: 1 })
+      const res = await order()
       expect(res.status).toBe(201)
       expect(res.body.data).toMatchObject({ amount: 3200, amountInSubunits: 320000, currency: "INR" })
       // Repeating reuses the open order rather than creating duplicates.
-      expect((await createOrder()).body.data.orderId).toBe(res.body.data.orderId)
+      expect((await order()).body.data.orderId).toBe(res.body.data.orderId)
     })
   })
 

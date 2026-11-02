@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react"
 import { useAuth } from "../auth/AuthContext"
-import { registrationsApi } from "../services/api"
+import { registrationsApi, upiApi } from "../services/api"
 import { initialsOf } from "../lib/format"
 
 const nav = [
@@ -23,21 +23,25 @@ const nav = [
   { to: "/admin/registrations", label: "Registrations", icon: UserCheck, badge: "pending" as const },
   { to: "/admin/batches", label: "Batches", icon: BookOpen },
   { to: "/admin/students", label: "Students", icon: Users },
-  { to: "/admin/payments", label: "Payments", icon: CreditCard },
+  { to: "/admin/payments", label: "Payments", icon: CreditCard, badge: "upi" as const },
   { to: "/admin/reports", label: "Reports", icon: BarChart3 },
   { to: "/admin/activity", label: "Audit history", icon: FileClock },
 ]
 
-/** Pending-registration count for the sidebar badge; refreshed on navigation. */
-function usePendingCount(pathname: string) {
-  const [count, setCount] = useState(0)
+/** Counts for the sidebar badges (registrations to review, UPI payments to verify); refreshed on navigation. */
+function usePendingCounts(pathname: string) {
+  const [counts, setCounts] = useState({ registrations: 0, upi: 0 })
   useEffect(() => {
     registrationsApi
       .list({ status: "PENDING", pageSize: 1 })
-      .then((r) => setCount(Number(r.meta.pendingCount ?? r.meta.total)))
+      .then((r) => setCounts((c) => ({ ...c, registrations: Number(r.meta.pendingCount ?? r.meta.total) })))
+      .catch(() => {})
+    upiApi
+      .claims("PENDING")
+      .then((r) => setCounts((c) => ({ ...c, upi: r.pendingCount })))
       .catch(() => {})
   }, [pathname])
-  return count
+  return counts
 }
 
 function useSignOut() {
@@ -51,7 +55,7 @@ export function AppShell() {
   const location = useLocation()
   const { user } = useAuth()
   const signOut = useSignOut()
-  const pending = usePendingCount(location.pathname)
+  const counts = usePendingCounts(location.pathname)
   const current = nav.find((item) =>
     item.end ? location.pathname === item.to : location.pathname.startsWith(item.to),
   )
@@ -99,9 +103,9 @@ export function AppShell() {
             >
               <Icon className="size-[18px]" />
               <span>{label}</span>
-              {badge === "pending" && pending > 0 && (
+              {(badge === "pending" ? counts.registrations : badge === "upi" ? counts.upi : 0) > 0 && (
                 <span className="ml-auto rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">
-                  {pending}
+                  {badge === "pending" ? counts.registrations : counts.upi}
                 </span>
               )}
             </NavLink>

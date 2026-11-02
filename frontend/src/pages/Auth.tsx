@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
+import { MOBILE_MESSAGE, isMobile } from "../lib/validation"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
@@ -165,7 +166,7 @@ const registrationSchema = z
     phone: z
       .string()
       .trim()
-      .regex(/^\+?[0-9 ()-]{10,20}$/, "Enter a valid phone number"),
+      .refine(isMobile, MOBILE_MESSAGE),
     schoolClass: z.string().min(1, "Choose a class"),
     requestedSubjects: z.array(z.string()).min(1, "Choose at least one subject"),
     preferredBatchId: z.string(),

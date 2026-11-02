@@ -1,4 +1,5 @@
 import type { Batch, Enrollment, FeeCharge, Student, User } from "@prisma/client"
+import { batchTimeLabel } from "../../lib/schedule"
 import { prisma, type Db } from "../../lib/prisma"
 import { outstandingOf, toRupees } from "../../lib/money"
 
@@ -86,7 +87,7 @@ export function serializeStudent(s: StudentWithRelations, standing: FeeStanding 
           code: current.batch.code,
           name: current.batch.name,
           schedule: current.batch.schedule,
-          time: current.batch.endTime ? `${current.batch.startTime} – ${current.batch.endTime}` : current.batch.startTime,
+          time: batchTimeLabel(current.batch.startTime, current.batch.endTime),
           monthlyFee: toRupees(current.batch.monthlyFee),
           status: current.batch.status,
           enrolledAt: current.startedAt,

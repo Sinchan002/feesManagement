@@ -50,7 +50,7 @@ settingsRouter.get("/health", async (_req, res) => {
       emailProvider: mailerConfigured() ? "CONNECTED" : "CONSOLE_ONLY",
       paymentGateway: env.PAYMENT_PROVIDER,
       paymentGatewayLive: env.PAYMENT_PROVIDER === "razorpay",
-      schedulerEnabled: env.SCHEDULER_ENABLED,
+      schedulerEnabled: env.SCHEDULER_ENABLED && !process.env.VERCEL,
       lastChargeGeneration: await getState("lastChargeGeneration"),
       lastReminderRun: await getState("lastReminderRun"),
     },

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { landlineOrMobileSchema } from "../../lib/http"
 import { prisma, type Db } from "../../lib/prisma"
 
 export const settingsSchema = z.object({
@@ -6,7 +7,7 @@ export const settingsSchema = z.object({
     name: z.string().trim().min(2).max(120),
     teacherName: z.string().trim().min(2).max(120),
     address: z.string().trim().max(300).default(""),
-    phone: z.string().trim().max(30).default(""),
+    phone: z.union([landlineOrMobileSchema, z.literal("")]).default(""),
   }),
   billing: z.object({
     /** Day of month monthly fees are due. */

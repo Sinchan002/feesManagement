@@ -7,6 +7,7 @@ import { nextPaymentCode } from "../../lib/codes"
 import { sha256 } from "../../lib/crypto"
 import { env } from "../../config/env"
 import { getSettings } from "../settings/service"
+import { chargeIdsWithPendingClaim } from "../upi/service"
 import { getPaymentProvider, type GatewayPayment } from "./providers"
 import { finalizeOnlinePayment, markOnlinePaymentFailed, type FinalizeResult } from "./service"
 
@@ -24,7 +25,7 @@ export async function createOnlineOrder(actor: Actor, studentId: string, chargeI
   const student = await prisma.student.findUnique({ where: { id: studentId }, include: { user: true } })
   if (!student || student.status !== "ACTIVE") throw notFound("Student")
 
-  const charges = await prisma.feeCharge.findMany({
+  const found = await prisma.feeCharge.findMany({
     where: {
       studentId,
       status: { in: ["PENDING", "PARTIALLY_PAID"] },
@@ -32,9 +33,15 @@ export async function createOnlineOrder(actor: Actor, studentId: string, chargeI
     },
     orderBy: { dueDate: "asc" },
   })
-  if (chargeIds?.length && charges.length !== new Set(chargeIds).size) {
+  if (chargeIds?.length && found.length !== new Set(chargeIds).size) {
     throw badRequest("Some selected fees are not payable (already paid, void, or not yours).")
   }
+  // Fees with a UPI payment waiting for the teacher can't also be paid here (it would be paid twice).
+  const awaiting = await chargeIdsWithPendingClaim(found.map((c) => c.id))
+  if (chargeIds?.length && found.some((c) => awaiting.has(c.id))) {
+    throw badRequest("A UPI payment for one of these fees is waiting for the teacher to verify. Choose other months, or wait for the result.")
+  }
+  const charges = found.filter((c) => !awaiting.has(c.id))
   const items = charges.map((c) => ({ chargeId: c.id, amount: outstandingOf(c) })).filter((i) => i.amount > 0)
   if (items.length === 0) throw badRequest("You have no outstanding fees to pay.")
   const amount = items.reduce((s, i) => s + i.amount, 0)

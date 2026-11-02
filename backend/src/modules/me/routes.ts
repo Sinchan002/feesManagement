@@ -1,4 +1,5 @@
 import { Router } from "express"
+import { batchTimeLabel } from "../../lib/schedule"
 import { z } from "zod"
 import { prisma } from "../../lib/prisma"
 import { optionalText, parse, phoneSchema } from "../../lib/http"
@@ -8,6 +9,7 @@ import { emailSchema } from "../auth/service"
 import { chargeInclude, serializeCharge } from "../fees/service"
 import { paymentInclude, serializePayment } from "../payments/service"
 import { getSettings } from "../settings/service"
+import { getUpiConfig, listClaims } from "../upi/service"
 import { serializeEnrollment, serializeStudent, standingFrom, studentInclude } from "../students/service"
 
 /**
@@ -27,7 +29,7 @@ async function loadProfile(studentId: string) {
 
 meRouter.get("/dashboard", async (req, res) => {
   const studentId = ownStudentId(req)
-  const [profile, openCharges, recentPayments, settings] = await Promise.all([
+  const [profile, openCharges, recentPayments, settings, upiClaims, upi] = await Promise.all([
     loadProfile(studentId),
     prisma.feeCharge.findMany({
       where: { studentId, status: { in: ["PENDING", "PARTIALLY_PAID"] } },
@@ -41,6 +43,8 @@ meRouter.get("/dashboard", async (req, res) => {
       take: 5,
     }),
     getSettings(),
+    listClaims({ studentId }, 10),
+    getUpiConfig(),
   ])
   const charges = openCharges.map(serializeCharge)
   res.json({
@@ -55,6 +59,10 @@ meRouter.get("/dashboard", async (req, res) => {
       recentPayments: recentPayments.map(serializePayment),
       latestReceiptPaymentId: recentPayments[0]?.id ?? null,
       onlinePaymentMethods: settings.paymentMethods,
+      // UPI: the teacher's details, this student's recent reports, and fees already awaiting verification.
+      upi: { configured: upi.configured },
+      upiClaims,
+      pendingClaimChargeIds: upiClaims.filter((c) => c.status === "PENDING").flatMap((c) => c.items.map((i) => i.chargeId)),
     },
   })
 })
@@ -111,6 +119,7 @@ meRouter.get("/batch", async (req, res) => {
           classLevel: batch.classLevel,
           subjects: batch.subjects,
           schedule: batch.schedule,
+          time: batchTimeLabel(batch.startTime, batch.endTime),
           startTime: batch.startTime,
           endTime: batch.endTime,
           status: batch.status,

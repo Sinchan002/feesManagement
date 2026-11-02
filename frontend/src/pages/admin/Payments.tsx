@@ -17,8 +17,17 @@ import {
   Spinner,
 } from "../../components/ui"
 import { feesApi, paymentsApi, reportsApi, studentsApi } from "../../services/api"
+import { UpiClaimsPanel } from "./UpiClaims"
 import type { Charge, Payment, Student } from "../../services/types"
-import { currentPeriod, errorMessage, formatDate, inr, methodLabel, periodLabel, todayISO, useAsync, useDebounced } from "../../lib/format"
+import { dateInputToIso, errorMessage, formatDate, inr, methodLabel, periodLabel, todayISO, useAsync, useDebounced } from "../../lib/format"
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+/** This year and the four before it (payments are not recorded in the future). */
+const yearOptions = () => {
+  const now = new Date().getFullYear()
+  return Array.from({ length: 5 }, (_, i) => now - i)
+}
 
 export function PaymentsPage() {
   const [showForm, setShowForm] = useState(false)
@@ -27,8 +36,20 @@ export function PaymentsPage() {
   const query = useDebounced(search)
   const [source, setSource] = useState("")
   const [page, setPage] = useState(1)
-  const summary = useAsync(() => reportsApi.collections(currentPeriod()), [])
-  const ledger = useAsync(() => paymentsApi.list({ search: query, source, page, pageSize: 25 }), [query, source, page])
+  // Month / year filter — defaults to the current month.
+  const [year, setYear] = useState(() => new Date().getFullYear())
+  const [month, setMonth] = useState(() => new Date().getMonth() + 1) // 1–12
+  const period = `${year}-${String(month).padStart(2, "0")}`
+  // Whole selected month in local (India) time, sent to the server as an instant range.
+  const range = {
+    from: new Date(year, month - 1, 1, 0, 0, 0).toISOString(),
+    to: new Date(year, month, 0, 23, 59, 59, 999).toISOString(),
+  }
+  const summary = useAsync(() => reportsApi.collections(period), [period])
+  const ledger = useAsync(
+    () => paymentsApi.list({ search: query, source, ...range, page, pageSize: 25 }),
+    [query, source, period, page],
+  )
   const [voiding, setVoiding] = useState<string | null>(null)
 
   const refresh = () => {
@@ -70,6 +91,7 @@ export function PaymentsPage() {
           {notice.text}
         </Alert>
       )}
+      <UpiClaimsPanel onChanged={refresh} />
       {showForm && (
         <ManualPaymentForm
           onCancel={() => setShowForm(false)}
@@ -82,7 +104,7 @@ export function PaymentsPage() {
       )}
       <div className="grid gap-4 sm:grid-cols-3">
         <Card className="p-5">
-          <p className="text-sm text-slate-500">Collected in {periodLabel(currentPeriod())}</p>
+          <p className="text-sm text-slate-500">Collected in {periodLabel(period)}</p>
           <p className="mt-2 text-2xl font-bold">{r ? inr(r.total) : "—"}</p>
           <p className="mt-2 text-xs text-slate-400">All successful payments this month</p>
         </Card>
@@ -109,7 +131,39 @@ export function PaymentsPage() {
               placeholder="Search payment, receipt, reference or student"
             />
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <div className="w-36">
+              <Select
+                value={month}
+                onChange={(e) => {
+                  setMonth(Number(e.target.value))
+                  setPage(1)
+                }}
+                aria-label="Month"
+              >
+                {MONTHS.map((name, i) => (
+                  <option key={name} value={i + 1}>
+                    {name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="w-28">
+              <Select
+                value={year}
+                onChange={(e) => {
+                  setYear(Number(e.target.value))
+                  setPage(1)
+                }}
+                aria-label="Year"
+              >
+                {yearOptions().map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </Select>
+            </div>
             <div className="w-40">
               <Select
                 value={source}
@@ -124,7 +178,7 @@ export function PaymentsPage() {
                 <option value="MANUAL">Manual</option>
               </Select>
             </div>
-            <Button variant="secondary" onClick={() => void paymentsApi.exportCsv({ search: query, source }).catch((e) => setNotice({ tone: "red", text: errorMessage(e) }))}>
+            <Button variant="secondary" onClick={() => void paymentsApi.exportCsv({ search: query, source, ...range }).catch((e) => setNotice({ tone: "red", text: errorMessage(e) }))}>
               <Download className="size-4" /> Export
             </Button>
           </div>
@@ -134,7 +188,7 @@ export function PaymentsPage() {
         ) : ledger.error ? (
           <ErrorState message={ledger.error} onRetry={ledger.reload} />
         ) : !ledger.data?.items.length ? (
-          <EmptyState icon={<Wallet />} title="No payments found" description="Recorded and verified online payments will appear here." />
+          <EmptyState icon={<Wallet />} title={`No payments in ${periodLabel(period)}`} description="Choose another month or year, or change the search and source filters." />
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -172,7 +226,7 @@ export function PaymentsPage() {
                       <td className="px-6 py-4 text-slate-500">{formatDate(p.paymentDate)}</td>
                       <td className="px-6 py-4">
                         {methodLabel(p.method)}
-                        {p.transactionReference && <p className="max-w-40 truncate text-xs text-slate-400">{p.transactionReference}</p>}
+                        {p.transactionReference && <p className="break-all font-mono text-sm font-semibold text-slate-700">{p.transactionReference}</p>}
                       </td>
                       <td className="px-6 py-4 font-bold">{inr(p.amount)}</td>
                       <td className="px-6 py-4">
@@ -276,7 +330,7 @@ function ManualPaymentForm({ onCancel, onSaved }: { onCancel: () => void; onSave
           studentId: student.id,
           amount: value,
           method,
-          paymentDate: new Date(`${date}T12:00:00`).toISOString(),
+          paymentDate: dateInputToIso(date),
           transactionReference: reference.trim() || undefined,
           notes: notes.trim() || undefined,
           allocations,

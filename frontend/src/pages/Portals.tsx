@@ -1,22 +1,24 @@
 import { useState } from "react"
+import { MOBILE_MESSAGE, isMobile } from "../lib/validation"
 import {
   CalendarDays,
   Check,
   CheckCircle2,
   Clock,
-  CreditCard,
   Download,
   Mail,
   MapPin,
   Pencil,
   Phone,
   ReceiptText,
+  Smartphone,
   ShieldCheck,
   UserRound,
 } from "lucide-react"
 import { Alert, Badge, Button, Card, ErrorState, Field, Input, LoadingState, Modal, PageHeader, Spinner } from "../components/ui"
 import { meApi, paymentsApi } from "../services/api"
-import type { Charge, CheckoutResult, OnlineOrder, Payment, Student } from "../services/types"
+import { PayUpiModal } from "./PayUpiModal"
+import type { Payment, Student } from "../services/types"
 import { errorMessage, formatDate, inr, methodLabel, periodLabel, useAsync } from "../lib/format"
 
 export function StudentPortalPage() {
@@ -24,7 +26,7 @@ export function StudentPortalPage() {
   const history = useAsync(() => meApi.payments(), [])
   const [notice, setNotice] = useState<{ tone: "green" | "red" | "amber"; text: string } | null>(null)
   const [editing, setEditing] = useState(false)
-  const [paying, setPaying] = useState(false)
+  const [payingUpi, setPayingUpi] = useState(false)
 
   const reloadAll = () => {
     void dash.reload()
@@ -36,7 +38,8 @@ export function StudentPortalPage() {
   const d = dash.data
   if (!d) return null
   const p = d.profile
-  const onlineEnabled = d.onlinePaymentMethods.upi || d.onlinePaymentMethods.card || d.onlinePaymentMethods.netBanking
+  // Fees that already have a UPI payment waiting for the teacher can't be paid a second time.
+  const payable = d.openCharges.filter((c) => !d.pendingClaimChargeIds.includes(c.id))
 
   const download = (id: string) => void paymentsApi.receiptPdf(id).catch((e) => setNotice({ tone: "red", text: errorMessage(e) }))
 
@@ -83,11 +86,11 @@ export function StudentPortalPage() {
             <div className="mt-8 flex flex-wrap gap-3">
               <button
                 type="button"
-                className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={d.outstanding <= 0 || !onlineEnabled}
-                onClick={() => setPaying(true)}
+                className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={!d.upi.configured || payable.length === 0}
+                onClick={() => setPayingUpi(true)}
               >
-                <CreditCard className="size-4" /> Pay fee online
+                <Smartphone className="size-4" /> Pay by UPI
               </button>
               <button
                 type="button"
@@ -100,9 +103,9 @@ export function StudentPortalPage() {
             </div>
             <p className="mt-5 flex items-center gap-2 text-xs text-slate-400">
               <ShieldCheck className="size-4" />
-              {onlineEnabled
-                ? "Payments are confirmed only after secure server verification."
-                : "Online payment is currently unavailable. Please pay at the academy."}
+              {d.upi.configured
+                ? "Fees are marked paid after your teacher verifies your UPI reference number."
+                : "UPI payment is not set up yet. Please pay at the academy."}
             </p>
           </div>
         </section>
@@ -193,6 +196,43 @@ export function StudentPortalPage() {
         </div>
       </Card>
 
+      {d.upiClaims.length > 0 && (
+        <Card>
+          <div className="border-b border-slate-100 p-5 sm:p-6">
+            <h2 className="font-bold">Your UPI payment reports</h2>
+            <p className="mt-1 text-xs text-slate-500">Fees are marked paid once the teacher verifies the reference number.</p>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {d.upiClaims.map((c) => (
+              <div key={c.id} className="flex flex-col gap-2 p-5 sm:flex-row sm:items-center sm:px-6">
+                <div className="min-w-0 flex-1">
+                  <p className="text-lg font-bold">{inr(c.amount)}</p>
+                  <p className="mt-0.5 text-sm text-slate-600">
+                    Reference no. <span className="font-mono text-base font-bold tracking-wide text-slate-950">{c.transactionReference}</span>
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {c.items.map((i) => (i.billingPeriod ? periodLabel(i.billingPeriod) : i.description)).join(", ")} • reported {formatDate(c.createdAt)}
+                  </p>
+                  {c.status === "REJECTED" && c.reviewNote && <p className="mt-1 text-xs text-red-600">Reason: {c.reviewNote}</p>}
+                </div>
+                {c.status === "PENDING" && <Badge tone="amber">Awaiting verification</Badge>}
+                {c.status === "REJECTED" && <Badge tone="red">Not verified</Badge>}
+                {c.status === "APPROVED" && (
+                  <>
+                    <Badge tone="green">Verified</Badge>
+                    {c.payment && (
+                      <Button variant="ghost" onClick={() => download(c.payment!.id)}>
+                        <Download className="size-4" /> Receipt
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="border-b border-slate-100 p-5 sm:p-6">
           <h2 className="font-bold">Payment history</h2>
@@ -222,13 +262,15 @@ export function StudentPortalPage() {
           }}
         />
       )}
-      {paying && (
-        <PayOnlineModal
+      {payingUpi && (
+        <PayUpiModal
           charges={d.openCharges}
-          onClose={() => setPaying(false)}
-          onDone={(result) => {
-            setPaying(false)
-            setNotice(result)
+          pendingIds={d.pendingClaimChargeIds}
+          studentCode={p.code}
+          onClose={() => setPayingUpi(false)}
+          onDone={(text) => {
+            setPayingUpi(false)
+            setNotice({ tone: "green", text })
             reloadAll()
           }}
         />
@@ -287,8 +329,10 @@ function EditProfileModal({ student, onClose, onSaved }: { student: Student; onC
   const field = (k: keyof typeof v) => ({ value: v[k], onChange: (e: React.ChangeEvent<HTMLInputElement>) => setV({ ...v, [k]: e.target.value }) })
 
   const save = async () => {
-    setBusy(true)
     setError(null)
+    if (!isMobile(v.phone)) return setError(`Your phone: ${MOBILE_MESSAGE}`)
+    if (v.parentPhone.trim() && !isMobile(v.parentPhone)) return setError(`Parent phone: ${MOBILE_MESSAGE}`)
+    setBusy(true)
     try {
       await meApi.updateProfile(v)
       onSaved()
@@ -332,173 +376,6 @@ function EditProfileModal({ student, onClose, onSaved }: { student: Student; onC
             {busy ? <Spinner /> : <Check className="size-4" />} Save
           </Button>
         </div>
-      </div>
-    </Modal>
-  )
-}
-
-// ───────────── Online payment ─────────────
-
-type RazorpayInstance = { open: () => void; on: (event: string, cb: (r: { error?: { description?: string } }) => void) => void }
-declare global {
-  interface Window {
-    Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance
-  }
-}
-
-function loadRazorpay(): Promise<void> {
-  if (window.Razorpay) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script")
-    s.src = "https://checkout.razorpay.com/v1/checkout.js"
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error("Could not load the payment window. Check your connection."))
-    document.body.appendChild(s)
-  })
-}
-
-type Result = { tone: "green" | "red" | "amber"; text: string }
-
-function PayOnlineModal({ charges, onClose, onDone }: { charges: Charge[]; onClose: () => void; onDone: (r: Result) => void }) {
-  const [order, setOrder] = useState<OnlineOrder | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // Every unpaid month starts ticked; the student can untick any of them.
-  const payable = [...charges].filter((c) => c.outstanding > 0).sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-  const [selected, setSelected] = useState<string[]>(() => payable.map((c) => c.id))
-  const chosen = payable.filter((c) => selected.includes(c.id))
-  const total = chosen.reduce((sum, c) => sum + c.outstanding, 0)
-  const toggle = (id: string, on: boolean) => setSelected((s) => (on ? [...s, id] : s.filter((x) => x !== id)))
-
-  /** The browser only relays the gateway's response; the server decides whether it succeeded. */
-  const verify = async (result: CheckoutResult) => {
-    try {
-      const p = await paymentsApi.verify(result)
-      onDone({ tone: "green", text: `Payment of ${inr(p.amount)} confirmed. Receipt ${p.receiptNumber} is ready to download.` })
-    } catch (e) {
-      onDone({ tone: "red", text: errorMessage(e) })
-    }
-  }
-
-  const start = async () => {
-    if (chosen.length === 0) return setError("Tick at least one month to pay.")
-    setBusy(true)
-    setError(null)
-    try {
-      // The server recomputes the amount from these fees; the total shown here is only a preview.
-      const o = await paymentsApi.createOrder(chosen.map((c) => c.id))
-      if (o.provider === "razorpay") {
-        await loadRazorpay()
-        const rzp = new window.Razorpay!({
-          key: o.keyId,
-          order_id: o.orderId,
-          amount: o.amountInSubunits,
-          currency: o.currency,
-          name: "SriKrishna Physics Academy",
-          description: o.description,
-          prefill: o.prefill,
-          theme: { color: "#2563eb" },
-          handler: (resp: CheckoutResult) => void verify(resp),
-          modal: { ondismiss: () => setBusy(false) },
-        })
-        rzp.on("payment.failed", (r) => setError(r.error?.description ?? "The payment failed. You can try again."))
-        rzp.open()
-      } else {
-        setOrder(o) // development: show the test gateway below
-        setBusy(false)
-      }
-    } catch (e) {
-      setError(errorMessage(e))
-      setBusy(false)
-    }
-  }
-
-  const simulate = async (outcome: "success" | "failure") => {
-    if (!order) return
-    setBusy(true)
-    setError(null)
-    try {
-      const gatewayResponse = await paymentsApi.mockCheckout(order.orderId, outcome)
-      await verify(gatewayResponse)
-    } catch (e) {
-      setError(errorMessage(e))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Modal
-      title="Pay fees online"
-      description={`Total due: ${inr(payable.reduce((s, c) => s + c.outstanding, 0))}`}
-      onClose={onClose}
-    >
-      <div className="space-y-4">
-        {error && <Alert>{error}</Alert>}
-        {!order ? (
-          <>
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-700">Choose the months to pay</p>
-                {payable.length > 1 && (
-                  <button
-                    type="button"
-                    className="text-xs font-semibold text-blue-600"
-                    onClick={() => setSelected(chosen.length === payable.length ? [] : payable.map((c) => c.id))}
-                  >
-                    {chosen.length === payable.length ? "Clear all" : "Select all"}
-                  </button>
-                )}
-              </div>
-              <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
-                {payable.map((c) => (
-                  <label key={c.id} className="flex cursor-pointer items-center gap-3 px-4 py-3 text-sm hover:bg-slate-50">
-                    <input
-                      type="checkbox"
-                      className="size-4"
-                      checked={selected.includes(c.id)}
-                      onChange={(e) => toggle(c.id, e.target.checked)}
-                      disabled={busy}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block font-semibold">{c.periodLabel ?? c.description}</span>
-                      <span className="block text-xs text-slate-400">
-                        {c.batchName ? `${c.batchName} • ` : ""}due {formatDate(c.dueDate)}
-                        {c.status === "PARTIALLY_PAID" ? ` • ${inr(c.paidAmount)} already paid` : ""}
-                      </span>
-                    </span>
-                    {c.isOverdue && <Badge tone="red">Overdue</Badge>}
-                    <span className="font-bold">{inr(c.outstanding)}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3 text-sm">
-              <span className="text-slate-500">
-                Paying for {chosen.length} of {payable.length} month{payable.length === 1 ? "" : "s"}
-              </span>
-              <span className="text-lg font-bold">{inr(total)}</span>
-            </div>
-            <Button className="w-full" onClick={start} disabled={busy || chosen.length === 0}>
-              {busy ? <Spinner /> : <CreditCard className="size-4" />} Pay {inr(total)}
-            </Button>
-            <p className="text-center text-xs text-slate-400">You'll get a receipt as soon as the payment is verified.</p>
-          </>
-        ) : (
-          <>
-            <Alert tone="amber">
-              <strong>Test payment gateway.</strong> The server is running in development mode, so no real money moves.
-              Order {order.orderId} for {inr(order.amount)}.
-            </Alert>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button onClick={() => void simulate("success")} disabled={busy}>
-                {busy ? <Spinner /> : <Check className="size-4" />} Simulate successful payment
-              </Button>
-              <Button variant="secondary" onClick={() => void simulate("failure")} disabled={busy}>
-                Simulate failed payment
-              </Button>
-            </div>
-          </>
-        )}
       </div>
     </Modal>
   )

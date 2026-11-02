@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { MOBILE_MESSAGE, isMobile } from "../../lib/validation"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
@@ -187,12 +188,12 @@ export function StudentsPage() {
 // ───────────── Add / edit student ─────────────
 
 const optionalEmail = z.union([z.email("Enter a valid email"), z.literal("")])
-const optionalPhone = z.union([z.string().regex(/^\+?[0-9 ()-]{10,20}$/, "Enter a valid phone number"), z.literal("")])
+const optionalPhone = z.union([z.string().trim().refine(isMobile, MOBILE_MESSAGE), z.literal("")])
 
 const studentSchema = z.object({
   name: z.string().trim().min(2, "Enter the full name").max(120),
   email: z.email("Enter a valid email"),
-  phone: z.string().trim().regex(/^\+?[0-9 ()-]{10,20}$/, "Enter a valid phone number"),
+  phone: z.string().trim().refine(isMobile, MOBILE_MESSAGE),
   schoolClass: z.string().trim().min(1, "Enter the class").max(40),
   subjects: z.string().trim().max(300),
   batchId: z.string(),

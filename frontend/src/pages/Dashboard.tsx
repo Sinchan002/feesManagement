@@ -34,6 +34,7 @@ const activityTone = (action: string) =>
 export function DashboardPage() {
   const { user } = useAuth()
   const { data, error, loading, reload } = useAsync(() => reportsApi.dashboard(), [])
+  const genStatus = useAsync(() => feesApi.generationStatus(), [])
   const [busy, setBusy] = useState<"reminders" | "generate" | null>(null)
   const [notice, setNotice] = useState<{ tone: "green" | "red"; text: string } | null>(null)
 
@@ -61,6 +62,7 @@ export function DashboardPage() {
         text: `${r.created} new charge(s) created for ${periodLabel(period)}${r.alreadyBilled ? `; ${r.alreadyBilled} already billed` : ""}.`,
       })
       void reload()
+      genStatus.reload()
     } catch (e) {
       setNotice({ tone: "red", text: errorMessage(e) })
     } finally {
@@ -128,9 +130,31 @@ export function DashboardPage() {
           </div>
         }
       />
+
+      {genStatus.data && genStatus.data.pendingStudents > 0 && (
+        <Alert tone="amber">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span>
+              <strong>{periodLabel(genStatus.data.period)} fees haven’t been generated yet.</strong>{" "}
+              {genStatus.data.pendingStudents} student{genStatus.data.pendingStudents === 1 ? "" : "s"} can’t see or pay this month’s fee until you generate it.
+            </span>
+            <Button onClick={generate} disabled={busy !== null}>
+              {busy === "generate" ? <Spinner /> : <FilePlus2 className="size-4" />} Generate now
+            </Button>
+          </div>
+        </Alert>
+      )}
       {notice && (
         <Alert tone={notice.tone} onDismiss={() => setNotice(null)}>
           {notice.text}
+        </Alert>
+      )}
+      {m && m.pendingUpiClaims > 0 && (
+        <Alert tone="blue">
+          {m.pendingUpiClaims} UPI payment{m.pendingUpiClaims === 1 ? " is" : "s are"} waiting for you to verify.{" "}
+          <Link to="/admin/payments" className="font-semibold underline">
+            Verify now
+          </Link>
         </Alert>
       )}
       {m && m.pendingRegistrations > 0 && (

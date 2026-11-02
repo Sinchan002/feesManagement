@@ -1,0 +1,48 @@
+1. Start Docker Desktop. Open it from the Start menu and wait until it says it's running (the whale icon stops animating). The database lives inside Docker and starts with it.
+
+2. Start the backend. Open a terminal (Git Bash, PowerShell, or the VS Code terminal):
+
+
+cd "D:\tuition fees management\backend"
+docker compose up -d
+npm run dev
+Wait for: API listening on http://localhost:4000/api
+
+3. Start the frontend in a second terminal, leaving the first one running:
+
+
+cd "D:\tuition fees management\frontend"
+npm run dev
+Wait for the line showing http://localhost:8443.
+
+4. Open http://localhost:8443 in your browser. Admin login: teacher@srikrishnaphysics.in with your password (originally change-me-please-123).
+
+To stop: press Ctrl + C in each terminal. Docker can stay running or be closed; your data is kept either way.
+
+One-time setup (already done on this PC)
+Only needed on a new computer, or if node_modules gets deleted:
+
+
+cd "D:\tuition fees management\backend"
+copy .env.example .env      (then edit ADMIN_PASSWORD in .env)
+docker compose up -d
+npm install
+npm run db:deploy           (creates the database tables)
+npm run db:seed             (creates the admin account)
+
+cd "D:\tuition fees management\frontend"
+npm install
+Requirements: Node.js 20 or newer (you have 24) and Docker Desktop.
+
+Useful extras
+What	Command (in backend)
+Browse and edit the database visually	npm run db:studio, then open http://localhost:5555
+Run the automated tests	npm test
+See emails (reset links, reminders)	they print in the backend terminal, since email isn't configured
+If something goes wrong
+"Can't reach database server at localhost:5433": Docker Desktop isn't running, or the database container isn't started. Open Docker Desktop, then run docker compose up -d in backend.
+The page says "Cannot reach the server": the backend terminal isn't running, or it stopped with an error. Check that terminal.
+"Port 8443 / 4000 is already in use": an old copy is still running. Close the other terminal, or restart the PC.
+Login works but online payment shows a "Test payment gateway": that's expected locally. No real money moves until Razorpay keys are set.
+
+

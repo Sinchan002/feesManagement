@@ -115,3 +115,10 @@ export function useDebounced<T>(value: T, ms = 300) {
   }, [value, ms])
   return v
 }
+
+/**
+ * A date picked in a form ("2026-11-01") → ISO timestamp for the server. Today means "right now"
+ * (noon today could still be in the future, which the server refuses); other days use noon.
+ */
+export const dateInputToIso = (day: string) =>
+  day === todayISO() ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString()

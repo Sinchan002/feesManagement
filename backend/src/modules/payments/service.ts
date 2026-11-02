@@ -115,77 +115,78 @@ async function applyAllocations(
   return total
 }
 
-export async function recordManualPayment(
-  actor: Actor,
-  input: {
-    studentId: string
-    amount: number
-    method: PaymentMethod
-    paymentDate: Date
-    transactionReference: string | null
-    notes: string | null
-    allocations?: AllocationRequest[]
-    autoAllocate: boolean
-    idempotencyKey: string | null
-  },
-) {
+export type ManualPaymentInput = {
+  studentId: string
+  amount: number
+  method: PaymentMethod
+  paymentDate: Date
+  transactionReference: string | null
+  notes: string | null
+  allocations?: AllocationRequest[]
+  autoAllocate: boolean
+  idempotencyKey: string | null
+}
+
+/**
+ * Records a manual payment inside the caller's transaction: payment + receipt number, allocation to
+ * fees, advance credit for any remainder, and the audit entry. Used by the Payments page form and
+ * by verification of a student's UPI claim.
+ */
+export async function createManualPaymentTx(tx: Tx, actor: Actor, input: ManualPaymentInput) {
+  const student = await tx.student.findUnique({ where: { id: input.studentId }, include: { user: true } })
+  if (!student) throw notFound("Student")
+  if (input.transactionReference && input.method !== "CASH") {
+    const dup = await tx.payment.findFirst({
+      where: { method: input.method, transactionReference: input.transactionReference, status: "SUCCEEDED" },
+    })
+    if (dup) throw conflict(`A ${input.method} payment with reference "${input.transactionReference}" is already recorded (${dup.code}).`)
+  }
+  const created = await tx.payment.create({
+    data: {
+      code: await nextPaymentCode(tx),
+      receiptNumber: await nextReceiptNumber(tx, input.paymentDate),
+      studentId: student.id,
+      amount: input.amount,
+      source: "MANUAL",
+      method: input.method,
+      status: "SUCCEEDED",
+      paymentDate: input.paymentDate,
+      transactionReference: input.transactionReference,
+      notes: input.notes,
+      recordedById: actor.id,
+      verifiedAt: new Date(),
+      verifiedVia: "MANUAL",
+      idempotencyKey: input.idempotencyKey,
+    },
+  })
+  const allocated = await applyAllocations(tx, {
+    paymentId: created.id,
+    studentId: student.id,
+    available: input.amount,
+    requested: input.allocations,
+    auto: input.autoAllocate,
+  })
+  await audit(
+    actor,
+    {
+      action: "PAYMENT_RECORDED",
+      entityType: "Payment",
+      entityId: created.id,
+      summary: `${student.user.name} • ₹${toRupees(input.amount).toLocaleString("en-IN")} via ${input.method} recorded manually (${created.receiptNumber})`,
+      metadata: { allocated: toRupees(allocated), unallocated: toRupees(input.amount - allocated) },
+    },
+    tx,
+  )
+  return created
+}
+
+export async function recordManualPayment(actor: Actor, input: ManualPaymentInput) {
   if (input.idempotencyKey) {
     const previous = await prisma.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } })
     if (previous) return { payment: previous, replayed: true }
   }
-  const student = await prisma.student.findUnique({ where: { id: input.studentId }, include: { user: true } })
-  if (!student) throw notFound("Student")
-  if (input.transactionReference && input.method !== "CASH") {
-    const dup = await prisma.payment.findFirst({
-      where: {
-        method: input.method,
-        transactionReference: input.transactionReference,
-        status: "SUCCEEDED",
-      },
-    })
-    if (dup) throw conflict(`A ${input.method} payment with reference "${input.transactionReference}" is already recorded (${dup.code}).`)
-  }
-
-  const payment = await prisma.$transaction(async (tx) => {
-    const created = await tx.payment.create({
-      data: {
-        code: await nextPaymentCode(tx),
-        receiptNumber: await nextReceiptNumber(tx, input.paymentDate),
-        studentId: student.id,
-        amount: input.amount,
-        source: "MANUAL",
-        method: input.method,
-        status: "SUCCEEDED",
-        paymentDate: input.paymentDate,
-        transactionReference: input.transactionReference,
-        notes: input.notes,
-        recordedById: actor.id,
-        verifiedAt: new Date(),
-        verifiedVia: "MANUAL",
-        idempotencyKey: input.idempotencyKey,
-      },
-    })
-    const allocated = await applyAllocations(tx, {
-      paymentId: created.id,
-      studentId: student.id,
-      available: input.amount,
-      requested: input.allocations,
-      auto: input.autoAllocate,
-    })
-    await audit(
-      actor,
-      {
-        action: "PAYMENT_RECORDED",
-        entityType: "Payment",
-        entityId: created.id,
-        summary: `${student.user.name} • ₹${toRupees(input.amount).toLocaleString("en-IN")} via ${input.method} recorded manually (${created.receiptNumber})`,
-        metadata: { allocated: toRupees(allocated), unallocated: toRupees(input.amount - allocated) },
-      },
-      tx,
-    )
-    return created
-  })
-  void sendReceiptEmail(payment.id)
+  const payment = await prisma.$transaction((tx) => createManualPaymentTx(tx, actor, input))
+  await sendReceiptEmail(payment.id)
   return { payment, replayed: false }
 }
 
@@ -348,7 +349,7 @@ export async function finalizeOnlinePayment(
     return { outcome: "succeeded", paymentId }
   })
 
-  if (result.outcome === "succeeded") void sendReceiptEmail(paymentId)
+  if (result.outcome === "succeeded") await sendReceiptEmail(paymentId)
   return result
 }
 

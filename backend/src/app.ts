@@ -14,6 +14,7 @@ import { reportsRouter } from "./modules/reports/routes"
 import { auditRouter } from "./modules/audit/routes"
 import { settingsRouter } from "./modules/settings/routes"
 import { meRouter } from "./modules/me/routes"
+import { upiRouter } from "./modules/upi/routes"
 
 export function createApp() {
   const app = express()
@@ -52,6 +53,7 @@ export function createApp() {
   app.use("/api/students", studentsRouter)
   app.use("/api/fees", feesRouter)
   app.use("/api/payments", paymentsRouter)
+  app.use("/api/upi", upiRouter)
   app.use("/api/reports", reportsRouter)
   app.use("/api/audit-logs", auditRouter)
   app.use("/api/settings", settingsRouter)
