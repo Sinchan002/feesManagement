@@ -1,4 +1,5 @@
 {
   "buildCommand": "prisma generate",
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+  "outputDirectory": "public",
+  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index" }]
 }
